@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 外部との通信をすべて禁止する設定（入力データがどこにも送信されないことを保証） -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>濃度・希釈計算</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --text: #1f2328;
+    --muted: #5f6670;
+    --border: #d0d5dc;
+    --accent: #1a6fd1;
+    --accent-text: #ffffff;
+    --ok-bg: #eef6ee;
+    --ok-border: #8cc08c;
+    --err-bg: #fdeeee;
+    --err-border: #e08b8b;
+    --err-text: #a12020;
+    --step-bg: rgba(0, 0, 0, 0.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c;
+      --card: #20242a;
+      --text: #e8eaed;
+      --muted: #a0a7b0;
+      --border: #3a4049;
+      --accent: #5aa2f0;
+      --accent-text: #0d1117;
+      --ok-bg: #1d2e1f;
+      --ok-border: #3f7a45;
+      --err-bg: #3a1e1e;
+      --err-border: #9a4545;
+      --err-text: #ffb3b3;
+      --step-bg: rgba(255, 255, 255, 0.05);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    line-height: 1.6;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.4rem; margin: 8px 0 16px; }
+
+  /* タブ */
+  .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--border); }
+  .tab {
+    flex: 1;
+    padding: 12px 8px;
+    font-size: 1rem;
+    border: none;
+    border-radius: 8px 8px 0 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .tab[aria-selected="true"] { background: var(--accent); color: var(--accent-text); font-weight: bold; }
+
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    padding: 16px;
+  }
+  .hint { color: var(--muted); font-size: 0.9rem; margin: 0 0 16px; }
+
+  /* 入力欄 */
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-weight: bold; margin-bottom: 4px; }
+  .field label .optional { font-weight: normal; color: var(--muted); font-size: 0.85rem; }
+  .input-row { display: flex; gap: 8px; }
+  input, select {
+    font-size: 16px; /* スマホで入力時に画面が拡大されないよう16px以上にする */
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  input { flex: 1; min-width: 0; width: 100%; }
+  select { flex: 0 0 9.5em; }
+  .unit-fixed { flex: 0 0 9.5em; align-self: center; color: var(--muted); }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .divider { border: none; border-top: 1px dashed var(--border); margin: 4px 0 14px; }
+
+  button { font-family: inherit; }
+  .buttons { display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; }
+  .buttons button {
+    flex: 1;
+    padding: 12px;
+    font-size: 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .btn-calc { background: var(--accent); color: var(--accent-text); border: none; font-weight: bold; }
+  .btn-clear, .btn-sub { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  .btn-danger { background: transparent; color: var(--err-text); border: 1px solid var(--err-border); }
+  button:disabled { opacity: 0.5; cursor: default; }
+
+  /* 結果 */
+  .result { margin-top: 18px; padding: 14px; border-radius: 8px; border: 1px solid; }
+  .result[hidden] { display: none; }
+  .result.ok { background: var(--ok-bg); border-color: var(--ok-border); }
+  .result.error { background: var(--err-bg); border-color: var(--err-border); color: var(--err-text); }
+  .result h2 { font-size: 1rem; margin: 0 0 8px; }
+  .result ul { margin: 0; padding-left: 1.2em; }
+  .result-item { display: flex; flex-wrap: wrap; gap: 0 12px; align-items: baseline; margin: 4px 0; }
+  .result-item .label { color: var(--muted); }
+  .result-item .value { font-size: 1.3rem; font-weight: bold; }
+  .result .note { margin: 8px 0 0; font-size: 0.95rem; }
+
+  /* 計算過程 */
+  .steps { margin-top: 14px; padding: 12px; border-radius: 6px; background: var(--step-bg); font-size: 0.92rem; }
+  .steps h3 { font-size: 0.95rem; margin: 0 0 6px; }
+  .steps ol { margin: 0; padding-left: 1.4em; }
+  .steps ol > li { margin-bottom: 6px; }
+  .steps ul { padding-left: 1.1em; margin: 2px 0 0; }
+  .steps .substituted { padding-left: 1em; overflow-wrap: anywhere; }
+  .steps li { overflow-wrap: anywhere; }
+
+  .add-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+  .btn-add {
+    padding: 10px 14px;
+    font-size: 1rem;
+    border-radius: 6px;
+    border: none;
+    background: var(--accent);
+    color: var(--accent-text);
+    cursor: pointer;
+  }
+  .add-hint { font-size: 0.85rem; color: var(--muted); }
+
+  /* ワークシート */
+  .worksheet {
+    margin-top: 24px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .worksheet h2 { font-size: 1.15rem; margin: 0 0 4px; }
+  .ws-count { color: var(--muted); font-size: 0.9rem; margin: 0 0 10px; }
+  .ws-warning { color: var(--err-text); background: var(--err-bg); border: 1px solid var(--err-border); border-radius: 6px; padding: 8px 10px; font-size: 0.9rem; }
+  .ws-warning[hidden], .ws-empty[hidden], .table-wrap[hidden] { display: none; }
+  .ws-empty { color: var(--muted); font-size: 0.95rem; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 0.85rem; }
+  th, td { border-bottom: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top; white-space: pre-line; }
+  th { background: var(--step-bg); white-space: nowrap; }
+  td.num { white-space: nowrap; }
+  .btn-row-delete {
+    padding: 4px 8px;
+    font-size: 0.85rem;
+    border-radius: 4px;
+    border: 1px solid var(--err-border);
+    background: transparent;
+    color: var(--err-text);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .notice {
+    margin: 0 0 16px;
+    padding: 10px 14px;
+    border: 1px solid var(--err-border);
+    border-radius: 8px;
+    background: var(--err-bg);
+    font-size: 0.9rem;
+  }
+  .notice ul { margin: 0; padding-left: 1.2em; }
+  .notice strong { color: var(--err-text); }
+
+  footer { max-width: 640px; margin: 0 auto; padding: 8px 16px 32px; font-size: 0.9rem; color: var(--muted); }
+  footer .caution { color: var(--text); font-weight: bold; }
+
+  .print-only { display: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  @media (max-width: 420px) {
+    select, .unit-fixed { flex-basis: 8em; }
+  }
+
+  /* 印刷：ワークシートの表と計算過程だけを印刷する */
+  @media print {
+    @page { size: A4 landscape; margin: 12mm; }
+    :root {
+      --bg: #fff; --card: #fff; --text: #000; --muted: #444; --border: #888; --step-bg: #f2f2f2;
+    }
+    body { background: #fff; color: #000; font-size: 10pt; }
+    main { max-width: none; padding: 0; }
+    main > :not(.worksheet), footer, .no-print { display: none !important; }
+    .print-only { display: block; }
+    .worksheet { border: none; padding: 0; margin: 0; }
+    .table-wrap { overflow: visible; border: none; }
+    table { min-width: 0; font-size: 8.5pt; }
+    th, td { border: 1px solid #888; }
+    tr, .print-record { break-inside: avoid; }
+    .print-header { margin-bottom: 10px; }
+    .print-header h1 { font-size: 14pt; margin: 0; }
+    .print-header p { margin: 2px 0; }
+    .print-details h2 { font-size: 12pt; margin: 18px 0 6px; break-before: page; }
+    .print-record { margin-bottom: 12px; }
+    .print-record h3 { font-size: 10pt; margin: 0 0 4px; }
+    .steps { background: none; border: 1px solid #bbb; font-size: 9pt; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>試料濃度・希釈計算ツール</h1>
+
+  <div class="notice no-print" role="note">
+    <ul>
+      <li><strong>このツールは実験の補助です。計算結果は必ずご自身で検算してください。</strong></li>
+      <li>入力した値は外部に送信されません（このページの中だけで計算します）。</li>
+      <li>このツールは更新・個別サポートを行いません。</li>
+    </ul>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" id="tab-prep" aria-controls="panel-prep" aria-selected="true">試料調製計算</button>
+    <button class="tab" role="tab" id="tab-dil" aria-controls="panel-dil" aria-selected="false" tabindex="-1">希釈計算</button>
+  </div>
+
+  <!-- タブ1：試料調製計算 -->
+  <section class="panel" role="tabpanel" id="panel-prep" aria-labelledby="tab-prep">
+    <form id="form-prep" novalidate>
+      <p class="hint">試料量・溶液量・濃度のうち、求めたい項目を<strong>1つだけ空欄</strong>にして「計算する」を押してください。モル質量は、モル濃度（pM〜M）を使うときに必要です。</p>
+      <div class="field">
+        <label for="p-memo">試料名・メモ <span class="optional">（任意・ワークシートに記録されます）</span></label>
+        <input id="p-memo" class="memo" type="text" maxlength="200" autocomplete="off" placeholder="例：グルコース標準液 Lot.123">
+      </div>
+      <hr class="divider">
+      <div class="field">
+        <label for="p-mw">モル質量</label>
+        <div class="input-row">
+          <input id="p-mw" type="text" inputmode="decimal" autocomplete="off">
+          <span class="unit-fixed">g/mol</span>
+        </div>
+      </div>
+      <div class="field">
+        <label for="p-purity">純度</label>
+        <div class="input-row">
+          <input id="p-purity" type="text" inputmode="decimal" autocomplete="off" value="100">
+          <span class="unit-fixed">%</span>
+        </div>
+      </div>
+      <div class="field">
+        <label for="p-sample">試料量</label>
+        <div class="input-row">
+          <input id="p-sample" type="text" inputmode="decimal" autocomplete="off">
+          <select id="p-sample-unit" aria-label="試料量の単位" data-units="mass" data-default="mg"></select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="p-volume">溶液量</label>
+        <div class="input-row">
+          <input id="p-volume" type="text" inputmode="decimal" autocomplete="off">
+          <select id="p-volume-unit" aria-label="溶液量の単位" data-units="volume" data-default="mL"></select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="p-conc">濃度</label>
+        <div class="input-row">
+          <input id="p-conc" type="text" inputmode="decimal" autocomplete="off">
+          <select id="p-conc-unit" aria-label="濃度の単位" data-units="conc" data-default="µg/mL"></select>
+        </div>
+      </div>
+      <div class="buttons">
+        <button type="submit" class="btn-calc">計算する</button>
+        <button type="button" class="btn-clear">クリア</button>
+      </div>
+      <div class="result" aria-live="polite" hidden></div>
+    </form>
+  </section>
+
+  <!-- タブ2：希釈計算 -->
+  <section class="panel" role="tabpanel" id="panel-dil" aria-labelledby="tab-dil" hidden>
+    <form id="form-dil" novalidate>
+      <p class="hint">C1 × V1 = C2 × V2 の4つのうち、求めたい項目を<strong>1つだけ空欄</strong>にして「計算する」を押してください。</p>
+      <div class="field">
+        <label for="d-memo">試料名・メモ <span class="optional">（任意・ワークシートに記録されます）</span></label>
+        <input id="d-memo" class="memo" type="text" maxlength="200" autocomplete="off" placeholder="例：検量線 STD-3">
+      </div>
+      <hr class="divider">
+      <div class="field">
+        <label for="d-c1">C1（元の濃度）</label>
+        <div class="input-row">
+          <input id="d-c1" type="text" inputmode="decimal" autocomplete="off">
+          <select id="d-c1-unit" aria-label="C1の単位" data-units="conc" data-default="mM"></select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="d-v1">V1（元の液量）</label>
+        <div class="input-row">
+          <input id="d-v1" type="text" inputmode="decimal" autocomplete="off">
+          <select id="d-v1-unit" aria-label="V1の単位" data-units="volume" data-default="µL"></select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="d-c2">C2（目的の濃度）</label>
+        <div class="input-row">
+          <input id="d-c2" type="text" inputmode="decimal" autocomplete="off">
+          <select id="d-c2-unit" aria-label="C2の単位" data-units="conc" data-default="µM"></select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="d-v2">V2（最終の液量）</label>
+        <div class="input-row">
+          <input id="d-v2" type="text" inputmode="decimal" autocomplete="off">
+          <select id="d-v2-unit" aria-label="V2の単位" data-units="volume" data-default="mL"></select>
+        </div>
+      </div>
+      <div class="buttons">
+        <button type="submit" class="btn-calc">計算する</button>
+        <button type="button" class="btn-clear">クリア</button>
+      </div>
+      <div class="result" aria-live="polite" hidden></div>
+    </form>
+  </section>
+
+  <!-- ワークシート（計算記録） -->
+  <section class="worksheet" id="worksheet">
+    <div class="print-only print-header">
+      <h1>計算記録ワークシート</h1>
+      <p id="print-tool"></p>
+      <p id="print-time"></p>
+    </div>
+    <h2 class="no-print">ワークシート（計算記録）</h2>
+    <p class="ws-count no-print" id="ws-count"></p>
+    <p class="ws-warning no-print" id="ws-warning" hidden>このブラウザでは記録を保存できません。記録はこの画面を開いている間だけ残り、ページを閉じると消えます。必要な記録は「CSVで保存」で保存してください。</p>
+    <p class="ws-empty no-print" id="ws-empty">まだ記録がありません。計算したあと「ワークシートに追加」を押すと、ここに記録されます。</p>
+    <div class="table-wrap" id="ws-table-wrap" hidden>
+      <table>
+        <thead>
+          <tr>
+            <th>No.</th><th>日時</th><th>計算の種類</th><th>試料名・メモ</th><th>入力値</th><th>計算式</th><th>結果</th><th class="no-print"><span class="sr-only">操作</span></th>
+          </tr>
+        </thead>
+        <tbody id="ws-body"></tbody>
+      </table>
+    </div>
+    <div class="buttons no-print">
+      <button type="button" class="btn-sub" id="ws-csv">CSVで保存</button>
+      <button type="button" class="btn-sub" id="ws-print">印刷</button>
+      <button type="button" class="btn-danger" id="ws-clear">全削除</button>
+    </div>
+    <div class="print-only print-details" id="print-details"></div>
+  </section>
+</main>
+
+<footer>
+  <p class="caution">⚠ 計算結果は必ずご自身で確認してください。</p>
+  <p>入力したデータはこの端末のブラウザ内だけで計算・保存され、どこにも送信されません。</p>
+  <p id="footer-version"></p>
+</footer>
+
+<script>
+'use strict';
+
+const TOOL_NAME = '試料濃度・希釈計算ツール';
+const TOOL_VERSION = 'v1.1';
+const STORAGE_KEY = 'lab-calc-worksheet';
+
+// ===== 単位の定義 =====
+// factor は「基準の単位にするには何倍するか」。基準は 質量=g、液量=L、質量濃度=g/L、モル濃度=mol/L
+const MASS_UNITS = { 'µg': 1e-6, 'mg': 1e-3, 'g': 1 };
+const VOLUME_UNITS = { 'µL': 1e-6, 'mL': 1e-3, 'L': 1 };
+const CONC_UNITS = {
+  'pg/mL':     { type: 'mass',  factor: 1e-9 },
+  'ng/mL':     { type: 'mass',  factor: 1e-6 },
+  'µg/mL':     { type: 'mass',  factor: 1e-3 },
+  'mg/mL':     { type: 'mass',  factor: 1 },
+  'µg/L(ppb)': { type: 'mass',  factor: 1e-6 },
+  'mg/L(ppm)': { type: 'mass',  factor: 1e-3 },
+  'g/L':       { type: 'mass',  factor: 1 },
+  'pM':        { type: 'molar', factor: 1e-12 },
+  'nM':        { type: 'molar', factor: 1e-9 },
+  'µM':        { type: 'molar', factor: 1e-6 },
+  'mM':        { type: 'molar', factor: 1e-3 },
+  'M':         { type: 'molar', factor: 1 },
+};
+// 換算値を表示するときに自動で選ぶ単位（大きい順）
+const MOLAR_AUTO = [['M', 1], ['mM', 1e-3], ['µM', 1e-6], ['nM', 1e-9], ['pM', 1e-12]];
+const MASS_AUTO = [['mg/mL', 1], ['µg/mL', 1e-3], ['ng/mL', 1e-6], ['pg/mL', 1e-9]];
+
+// ===== 入力の読み取り =====
+const NUMBER_PATTERN = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
+
+// 全角の数字・記号を半角にそろえる（「１０．５」なども入力できるように）
+function toHalfWidth(text) {
+  return text
+    .replace(/[０-９．＋－ｅＥ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/−/g, '-');
+}
+
+// 入力欄の文字を読み取り、{ blank: true } / { value: 数値 } / { error: メッセージ } のどれかを返す
+function parseNumber(raw, label) {
+  const text = toHalfWidth(String(raw)).trim();
+  if (text === '') return { blank: true };
+  if (!NUMBER_PATTERN.test(text)) {
+    return { error: `${label}には数字を入力してください（入力された値：「${String(raw).trim()}」）。` };
+  }
+  const value = Number(text);
+  if (!Number.isFinite(value)) return { error: `${label}の数字が大きすぎます。` };
+  if (value <= 0) return { error: `${label}には 0 より大きい数字を入力してください。` };
+  return { value };
+}
+
+function blankMessage(names, count) {
+  if (count === 0) return `${names}のうち、計算したい項目を1つ空欄にしてください。`;
+  return `${names}のうち、空欄は1つだけにしてください（いま ${count} 個が空欄です）。`;
+}
+
+// ===== 数字の表示 =====
+const SUPERSCRIPT = { '-': '⁻', '+': '', '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹' };
+
+// 指数表記の文字（"1.234e-5"）を「1.234 × 10⁻⁵」の形にする
+function powerOfTen(exponential) {
+  const [mantissa, exponent] = exponential.split('e');
+  const sup = exponent.split('').map(c => SUPERSCRIPT[c]).join('');
+  return `${Number(mantissa)} × 10${sup}`;
+}
+
+// 結果用：有効数字4桁に丸めて表示用の文字にする（0.30000000000000004 → 0.3）
+function formatNumber(x) {
+  const rounded = Number(x.toPrecision(4));
+  const abs = Math.abs(rounded);
+  if (abs !== 0 && (abs < 1e-4 || abs >= 1e7)) return powerOfTen(rounded.toExponential(3));
+  return rounded.toLocaleString('ja-JP', { maximumSignificantDigits: 4 });
+}
+
+// 計算過程用：浮動小数点の誤差だけを取り除き、桁はなるべく残す（有効数字12桁）
+function formatFull(x) {
+  const r = Number(x.toPrecision(12));
+  const abs = Math.abs(r);
+  if (abs !== 0 && (abs < 1e-6 || abs >= 1e9)) return powerOfTen(r.toExponential());
+  return String(r);
+}
+
+// 「数値 単位」の文字を作る（計算過程用）
+const q = (value, unit) => `${formatFull(value)} ${unit}`;
+
+// 値がちょうど読みやすくなる単位を選ぶ（0.005495 M → 5.495 mM）
+function pickUnit(baseValue, candidates) {
+  for (const [unit, factor] of candidates) {
+    if (baseValue / factor >= 1) return [baseValue / factor, unit];
+  }
+  const [unit, factor] = candidates[candidates.length - 1];
+  return [baseValue / factor, unit];
+}
+
+// ===== 計算過程の部品 =====
+// steps = { inputs: [...], conversions: [...], formulas: [{ formula, substituted, conversion? }], results: [...] }
+function conversionStep(text) {
+  return { formula: '単位の変換', substituted: text, conversion: true };
+}
+function formulaLines(steps) {
+  return steps.formulas.filter(s => !s.conversion).map(s => `${s.formula} ${s.substituted}`);
+}
+function resultLines(results) {
+  return results.map(r => `${r.label} = ${formatNumber(r.value)} ${r.unit}`);
+}
+
+// ===== タブ1：試料調製計算 =====
+// 成功時は { ok: true, results: [{label, value, unit}], notes, record }、失敗時は { ok: false, errors }
+function calcPrep(input) {
+  const errors = [];
+  const f = {
+    mw: parseNumber(input.mw, 'モル質量'),
+    purity: parseNumber(input.purity, '純度'),
+    sample: parseNumber(input.sample, '試料量'),
+    volume: parseNumber(input.volume, '溶液量'),
+    conc: parseNumber(input.conc, '濃度'),
+  };
+  for (const key in f) if (f[key].error) errors.push(f[key].error);
+
+  if (f.purity.blank) errors.push('純度を入力してください（分からない場合は 100 と入力します）。');
+  else if (f.purity.value > 100) errors.push('純度は 100 以下の数字で入力してください。');
+
+  const targets = ['sample', 'volume', 'conc'];
+  const blanks = targets.filter(k => f[k].blank);
+  if (targets.every(k => !f[k].error) && blanks.length !== 1) {
+    errors.push(blankMessage('試料量・溶液量・濃度', blanks.length));
+  }
+
+  const concUnit = CONC_UNITS[input.concUnit];
+  if (concUnit.type === 'molar' && f.mw.blank) {
+    errors.push('モル濃度の単位（pM〜M）を使うときは、モル質量を入力してください。');
+  }
+  if (errors.length) return { ok: false, errors };
+
+  const mw = f.mw.value; // 未入力なら undefined（質量濃度だけで計算するときは不要）
+  const purity = f.purity.value;
+  const ratio = purity / 100;
+  const { sampleUnit, volumeUnit, concUnit: concName } = input;
+  const massFactor = MASS_UNITS[sampleUnit];
+  const volumeFactor = VOLUME_UNITS[volumeUnit];
+  const target = blanks[0];
+  const steps = { inputs: [], conversions: [], formulas: [], results: [] };
+  const results = [];
+
+  // 基準の単位の値を、表示する単位に戻して結果に加える
+  function addResult(label, baseValue, baseUnit, value, unit) {
+    steps.formulas.push(conversionStep(`${q(baseValue, baseUnit)} = ${q(value, unit)}`));
+    results.push({ label, value, unit });
+  }
+
+  // 1. 入力値
+  if (mw) steps.inputs.push(`モル質量 = ${q(mw, 'g/mol')}`);
+  steps.inputs.push(`純度 = ${q(purity, '%')}`);
+  for (const [key, label, unit] of [['sample', '試料量', sampleUnit], ['volume', '溶液量', volumeUnit], ['conc', '濃度', concName]]) {
+    steps.inputs.push(f[key].blank ? `${label} = 計算対象（${unit} で求める）` : `${label} = ${q(f[key].value, unit)}`);
+  }
+
+  // 2. 単位換算（入力された値を基準の単位にそろえる）
+  let grams, liters, gPerL;
+  if (!f.sample.blank) {
+    grams = f.sample.value * massFactor;
+    steps.conversions.push(`${q(f.sample.value, sampleUnit)} = ${q(grams, 'g')}`);
+  }
+  if (!f.volume.blank) {
+    liters = f.volume.value * volumeFactor;
+    steps.conversions.push(`${q(f.volume.value, volumeUnit)} = ${q(liters, 'L')}`);
+  }
+  steps.conversions.push(`純度 ${formatFull(purity)}% → ${formatFull(purity)} ÷ 100 = ${formatFull(ratio)}`);
+  if (!f.conc.blank) {
+    if (concUnit.type === 'mass') {
+      gPerL = f.conc.value * concUnit.factor;
+      steps.conversions.push(`${q(f.conc.value, concName)} = ${q(gPerL, 'g/L')}`);
+    } else {
+      const molPerL = f.conc.value * concUnit.factor;
+      steps.conversions.push(`${q(f.conc.value, concName)} = ${q(molPerL, 'mol/L')}`);
+      gPerL = molPerL * mw;
+      steps.formulas.push({ formula: '質量濃度 = モル濃度 × モル質量', substituted: `= ${q(molPerL, 'mol/L')} × ${q(mw, 'g/mol')} = ${q(gPerL, 'g/L')}` });
+    }
+  }
+
+  // 3. 計算式と代入
+  if (target === 'conc') {
+    gPerL = grams * ratio / liters;
+    steps.formulas.push({ formula: '質量濃度 = 試料量 × (純度/100) ÷ 溶液量', substituted: `= ${q(grams, 'g')} × ${formatFull(ratio)} ÷ ${q(liters, 'L')} = ${q(gPerL, 'g/L')}` });
+    const molPerL = mw ? gPerL / mw : undefined;
+    if (mw) {
+      steps.formulas.push({ formula: 'モル濃度 = 質量濃度 ÷ モル質量', substituted: `= ${q(gPerL, 'g/L')} ÷ ${q(mw, 'g/mol')} = ${q(molPerL, 'mol/L')}` });
+    }
+    if (concUnit.type === 'mass') {
+      addResult('濃度', gPerL, 'g/L', gPerL / concUnit.factor, concName);
+      if (mw) {
+        const [v, u] = pickUnit(molPerL, MOLAR_AUTO);
+        addResult('モル濃度に換算', molPerL, 'mol/L', v, u);
+      }
+    } else {
+      addResult('濃度', molPerL, 'mol/L', molPerL / concUnit.factor, concName);
+      const [v, u] = pickUnit(gPerL, MASS_AUTO);
+      addResult('質量濃度に換算', gPerL, 'g/L', v, u);
+    }
+  } else if (target === 'sample') {
+    grams = gPerL * liters / ratio;
+    steps.formulas.push({ formula: '試料量 = 質量濃度 × 溶液量 ÷ (純度/100)', substituted: `= ${q(gPerL, 'g/L')} × ${q(liters, 'L')} ÷ ${formatFull(ratio)} = ${q(grams, 'g')}` });
+    addResult('試料量', grams, 'g', grams / massFactor, sampleUnit);
+  } else {
+    liters = grams * ratio / gPerL;
+    steps.formulas.push({ formula: '溶液量 = 試料量 × (純度/100) ÷ 質量濃度', substituted: `= ${q(grams, 'g')} × ${formatFull(ratio)} ÷ ${q(gPerL, 'g/L')} = ${q(liters, 'L')}` });
+    addResult('溶液量', liters, 'L', liters / volumeFactor, volumeUnit);
+  }
+
+  // 4. 結果
+  steps.results = resultLines(results);
+  return { ok: true, results, notes: [], record: { type: '試料調製計算', steps, results } };
+}
+
+// ===== タブ2：希釈計算 =====
+function calcDilution(input) {
+  const errors = [];
+  const labels = { c1: 'C1（元の濃度）', v1: 'V1（元の液量）', c2: 'C2（目的の濃度）', v2: 'V2（最終の液量）' };
+  const f = {};
+  for (const k in labels) f[k] = parseNumber(input[k], labels[k]);
+  for (const k in f) if (f[k].error) errors.push(f[k].error);
+
+  const u = {
+    c1: CONC_UNITS[input.c1Unit].factor,
+    v1: VOLUME_UNITS[input.v1Unit],
+    c2: CONC_UNITS[input.c2Unit].factor,
+    v2: VOLUME_UNITS[input.v2Unit],
+  };
+  if (CONC_UNITS[input.c1Unit].type !== CONC_UNITS[input.c2Unit].type) {
+    errors.push('C1 と C2 の単位の種類がそろっていません。質量濃度（µg/mL など）どうし、またはモル濃度（mM など）どうしにしてください。');
+  }
+
+  const keys = ['c1', 'v1', 'c2', 'v2'];
+  const blanks = keys.filter(k => f[k].blank);
+  if (keys.every(k => !f[k].error) && blanks.length !== 1) {
+    errors.push(blankMessage('C1・V1・C2・V2', blanks.length));
+  }
+  if (errors.length) return { ok: false, errors };
+
+  // すべて基準の単位（g/L または mol/L、L）にそろえて計算する
+  const base = {};
+  for (const k of keys) if (!f[k].blank) base[k] = f[k].value * u[k];
+  const target = blanks[0];
+  // [計算式, 掛ける2つ, 割る1つ]
+  const FORMULAS = {
+    c1: ['C1 = C2 × V2 ÷ V1', 'c2', 'v2', 'v1'],
+    v1: ['V1 = C2 × V2 ÷ C1', 'c2', 'v2', 'c1'],
+    c2: ['C2 = C1 × V1 ÷ V2', 'c1', 'v1', 'v2'],
+    v2: ['V2 = C1 × V1 ÷ C2', 'c1', 'v1', 'c2'],
+  };
+  const [formula, m1, m2, d] = FORMULAS[target];
+  base[target] = base[m1] * base[m2] / base[d];
+
+  if (base.v1 > base.v2 * (1 + 1e-9)) {
+    return { ok: false, errors: ['C2（目的の濃度）が C1（元の濃度）より高くなっています（V1 が V2 より大きい状態です）。希釈では濃度を上げられないので、数値と単位を確認してください。'] };
+  }
+
+  const concBase = CONC_UNITS[input.c1Unit].type === 'mass' ? 'g/L' : 'mol/L';
+  const baseUnits = { c1: concBase, v1: 'L', c2: concBase, v2: 'L' };
+  const unitNames = { c1: input.c1Unit, v1: input.v1Unit, c2: input.c2Unit, v2: input.v2Unit };
+  const bq = k => q(base[k], baseUnits[k]);
+
+  // 溶媒の量は、V1 と V2 のうち小さいほうの単位で表示する
+  const solventKey = u.v1 <= u.v2 ? 'v1' : 'v2';
+  const solventL = Math.max(base.v2 - base.v1, 0);
+  const solvent = solventL / u[solventKey];
+
+  const steps = { inputs: [], conversions: [], formulas: [], results: [] };
+  for (const k of keys) {
+    steps.inputs.push(f[k].blank ? `${labels[k]} = 計算対象（${unitNames[k]} で求める）` : `${labels[k]} = ${q(f[k].value, unitNames[k])}`);
+    if (!f[k].blank) steps.conversions.push(`${q(f[k].value, unitNames[k])} = ${bq(k)}`);
+  }
+  steps.formulas.push({ formula, substituted: `= ${bq(m1)} × ${bq(m2)} ÷ ${bq(d)} = ${bq(target)}` });
+  steps.formulas.push(conversionStep(`${bq(target)} = ${q(base[target] / u[target], unitNames[target])}`));
+  steps.formulas.push({ formula: '加える溶媒の量 = V2 − V1', substituted: `= ${bq('v2')} − ${bq('v1')} = ${q(solventL, 'L')}` });
+  steps.formulas.push(conversionStep(`${q(solventL, 'L')} = ${q(solvent, unitNames[solventKey])}`));
+
+  const results = [
+    { label: labels[target], value: base[target] / u[target], unit: unitNames[target] },
+    { label: '加える溶媒の量（V2 − V1）', value: solvent, unit: unitNames[solventKey] },
+  ];
+  steps.results = resultLines(results);
+
+  const show = k => `${formatNumber(base[k] / u[k])} ${unitNames[k]}`;
+  return {
+    ok: true,
+    results,
+    notes: [`元の液 ${show('v1')} に溶媒 ${formatNumber(solvent)} ${unitNames[solventKey]} を加えて、全量を ${show('v2')} にします。`],
+    record: { type: '希釈計算', steps, results },
+  };
+}
+
+// ===== 日時とCSV =====
+const pad = n => String(n).padStart(2, '0');
+function formatDateTime(d) {
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function fileStamp(d) {
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+// CSVの1マス分の文字を作る。Excelで数式として実行されないよう、= + - @ で始まる文字には ' を付ける
+function csvCell(value) {
+  if (typeof value === 'number') return String(value);
+  let text = String(value);
+  if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+// ワークシートの記録からCSVの文字を作る（先頭のBOMで、Excelでも日本語が文字化けしない）
+const MAX_RESULTS = 2;
+function buildCsv(records, now) {
+  const header = ['No.', '日時', '計算の種類', '試料名・メモ', '入力値', '計算式'];
+  for (let n = 1; n <= MAX_RESULTS; n++) {
+    header.push(`結果${n} 項目`, `結果${n} 値（有効数字4桁）`, `結果${n} 値（丸める前の計算値）`, `結果${n} 単位`);
+  }
+  const rows = [
+    [`${TOOL_NAME} ${TOOL_VERSION}`],
+    ['作成日時', formatDateTime(now)],
+    [],
+    header,
+  ];
+  records.forEach((r, i) => {
+    const row = [i + 1, formatDateTime(new Date(r.time)), r.type, r.memo, r.steps.inputs.join(' / '), formulaLines(r.steps).join(' / ')];
+    for (let n = 0; n < MAX_RESULTS; n++) {
+      const x = r.results[n];
+      row.push(...(x ? [x.label, Number(x.value.toPrecision(4)), x.value, x.unit] : ['', '', '', '']));
+    }
+    rows.push(row);
+  });
+  return '﻿' + rows.map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
+}
+
+// ===== 画面の操作（ブラウザで開いたときだけ動かす） =====
+if (typeof document !== 'undefined') {
+  const UNIT_LISTS = { mass: MASS_UNITS, volume: VOLUME_UNITS, conc: CONC_UNITS };
+  const $ = id => document.getElementById(id);
+
+  // 要素を作る小さな道具（文字は textContent で入れるので、入力された文字がそのまま安全に表示される）
+  function el(tag, className, text) {
+    const e = document.createElement(tag);
+    if (className) e.className = className;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  // 単位の選択肢を作る
+  for (const select of document.querySelectorAll('select[data-units]')) {
+    for (const name of Object.keys(UNIT_LISTS[select.dataset.units])) {
+      const option = new Option(name, name);
+      option.defaultSelected = name === select.dataset.default;
+      select.add(option);
+    }
+  }
+  $('footer-version').textContent = `${TOOL_NAME} ${TOOL_VERSION}`;
+  $('print-tool').textContent = `${TOOL_NAME} ${TOOL_VERSION}`;
+
+  // タブの切り替え
+  const tabs = [...document.querySelectorAll('.tab')];
+  function selectTab(tab) {
+    for (const t of tabs) {
+      const selected = t === tab;
+      t.setAttribute('aria-selected', String(selected));
+      t.tabIndex = selected ? 0 : -1;
+      $(t.getAttribute('aria-controls')).hidden = !selected;
+    }
+  }
+  tabs.forEach((tab, i) => {
+    tab.addEventListener('click', () => selectTab(tab));
+    tab.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+      selectTab(next);
+      next.focus();
+    });
+  });
+
+  // ----- 計算過程の表示 -----
+  function renderSteps(steps) {
+    const wrap = el('div', 'steps');
+    wrap.append(el('h3', null, '計算過程'));
+    const ol = el('ol');
+    const section = (title, items) => {
+      const li = el('li');
+      const ul = el('ul');
+      for (const item of items) ul.append(typeof item === 'string' ? el('li', null, item) : item);
+      li.append(el('strong', null, title), ul);
+      ol.append(li);
+    };
+    section('入力値', steps.inputs);
+    section('単位換算', steps.conversions);
+    section('計算式と代入', steps.formulas.map(s => {
+      if (s.conversion) return el('li', null, `単位の変換：${s.substituted}`);
+      const li = el('li');
+      li.append(el('div', 'formula', s.formula), el('div', 'substituted', s.substituted));
+      return li;
+    }));
+    section('結果（有効数字4桁に丸めた値）', steps.results);
+    wrap.append(ol);
+    return wrap;
+  }
+
+  // ----- 結果の表示 -----
+  function showResult(box, result, memoInput) {
+    box.replaceChildren();
+    box.hidden = false;
+    if (!result.ok) {
+      box.className = 'result error';
+      const list = el('ul');
+      for (const message of result.errors) list.append(el('li', null, message));
+      box.append(el('h2', null, '入力を確認してください'), list);
+      return;
+    }
+    box.className = 'result ok';
+    box.append(el('h2', null, '計算結果'));
+    for (const r of result.results) {
+      const row = el('div', 'result-item');
+      row.append(el('span', 'label', r.label), el('span', 'value', `${formatNumber(r.value)} ${r.unit}`));
+      box.append(row);
+    }
+    for (const note of result.notes) box.append(el('p', 'note', note));
+    box.append(renderSteps(result.record.steps));
+
+    const addRow = el('div', 'add-row');
+    const addButton = el('button', 'btn-add', 'ワークシートに追加');
+    addButton.type = 'button';
+    addButton.addEventListener('click', () => {
+      addRecord({ ...result.record, memo: memoInput.value.trim() });
+      addButton.disabled = true;
+      addButton.textContent = 'ワークシートに追加しました ✓';
+    });
+    addRow.append(addButton, el('span', 'add-hint', '「試料名・メモ」の内容も一緒に記録されます'));
+    box.append(addRow);
+  }
+
+  const val = id => $(id).value;
+
+  function setupForm(formId, calculate) {
+    const form = $(formId);
+    const box = form.querySelector('.result');
+    const memoInput = form.querySelector('.memo');
+    form.addEventListener('submit', e => {
+      e.preventDefault(); // ページの再読み込みを止める
+      showResult(box, calculate(), memoInput);
+    });
+    form.querySelector('.btn-clear').addEventListener('click', () => {
+      form.reset(); // 入力を消し、純度や単位は初期値に戻す
+      box.hidden = true;
+      box.replaceChildren();
+    });
+  }
+
+  setupForm('form-prep', () => calcPrep({
+    mw: val('p-mw'), purity: val('p-purity'),
+    sample: val('p-sample'), sampleUnit: val('p-sample-unit'),
+    volume: val('p-volume'), volumeUnit: val('p-volume-unit'),
+    conc: val('p-conc'), concUnit: val('p-conc-unit'),
+  }));
+  setupForm('form-dil', () => calcDilution({
+    c1: val('d-c1'), c1Unit: val('d-c1-unit'),
+    v1: val('d-v1'), v1Unit: val('d-v1-unit'),
+    c2: val('d-c2'), c2Unit: val('d-c2-unit'),
+    v2: val('d-v2'), v2Unit: val('d-v2-unit'),
+  }));
+
+  // ----- ワークシート（記録の保存・表示） -----
+  function isValidRecord(r) {
+    return r && typeof r.id === 'string' && typeof r.type === 'string' && typeof r.time === 'string'
+      && r.steps && Array.isArray(r.steps.inputs) && Array.isArray(r.steps.formulas) && Array.isArray(r.steps.results)
+      && Array.isArray(r.results) && r.results.every(x => typeof x.value === 'number');
+  }
+
+  // localStorage は環境によって使えないことがあるので、失敗しても止まらないようにする
+  function loadRecords() {
+    let saved;
+    try {
+      saved = localStorage.getItem(STORAGE_KEY);
+    } catch (e) {
+      $('ws-warning').hidden = false;
+      return [];
+    }
+    try {
+      const data = JSON.parse(saved || '[]');
+      return Array.isArray(data) ? data.filter(isValidRecord) : [];
+    } catch (e) {
+      return []; // 保存内容が壊れていたら読み飛ばす
+    }
+  }
+  function saveRecords() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+    } catch (e) {
+      $('ws-warning').hidden = false;
+    }
+  }
+
+  let records = loadRecords();
+
+  function addRecord(record) {
+    records.push({
+      ...record,
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      time: new Date().toISOString(),
+    });
+    saveRecords();
+    renderWorksheet();
+  }
+
+  function renderWorksheet() {
+    const body = $('ws-body');
+    const details = $('print-details');
+    body.replaceChildren();
+    details.replaceChildren();
+    if (records.length) details.append(el('h2', null, '計算過程の詳細'));
+
+    records.forEach((r, i) => {
+      const time = formatDateTime(new Date(r.time));
+      const tr = el('tr');
+      tr.append(
+        el('td', 'num', String(i + 1)),
+        el('td', 'num', time),
+        el('td', null, r.type),
+        el('td', null, r.memo),
+        el('td', null, r.steps.inputs.join('\n')),
+        el('td', null, formulaLines(r.steps).join('\n')),
+        el('td', null, resultLines(r.results).join('\n')),
+      );
+      const actionCell = el('td', 'no-print');
+      const del = el('button', 'btn-row-delete', '削除');
+      del.type = 'button';
+      del.setAttribute('aria-label', `No.${i + 1} の記録を削除`);
+      del.addEventListener('click', () => {
+        records = records.filter(x => x.id !== r.id);
+        saveRecords();
+        renderWorksheet();
+      });
+      actionCell.append(del);
+      tr.append(actionCell);
+      body.append(tr);
+
+      // 印刷用：記録ごとの計算過程
+      const block = el('div', 'print-record');
+      block.append(el('h3', null, `No.${i + 1}　${r.type}　${time}${r.memo ? '　' + r.memo : ''}`), renderSteps(r.steps));
+      details.append(block);
+    });
+
+    const empty = records.length === 0;
+    $('ws-empty').hidden = !empty;
+    $('ws-table-wrap').hidden = empty;
+    $('ws-count').textContent = `記録 ${records.length} 件`;
+    for (const id of ['ws-csv', 'ws-print', 'ws-clear']) $(id).disabled = empty;
+  }
+
+  $('ws-clear').addEventListener('click', () => {
+    if (!confirm(`ワークシートの記録 ${records.length} 件をすべて削除します。元に戻せません。よろしいですか？`)) return;
+    records = [];
+    saveRecords();
+    renderWorksheet();
+  });
+
+  $('ws-csv').addEventListener('click', () => {
+    const now = new Date();
+    const blob = new Blob([buildCsv(records, now)], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = el('a');
+    link.href = url;
+    link.download = `計算記録_${fileStamp(now)}.csv`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  // 印刷するときに、作成日時を印刷物に入れる（Ctrl+P / ⌘P で印刷したときも同じ）
+  window.addEventListener('beforeprint', () => {
+    $('print-time').textContent = `作成日時：${formatDateTime(new Date())}`;
+  });
+  $('ws-print').addEventListener('click', () => window.print());
+
+  renderWorksheet();
+}
+</script>
+</body>
+</html>
